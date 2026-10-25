@@ -10,7 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${SCRIPT_DIR}"
 
 echo "[1/4] Building release shared library (cargo build --release)..."
-cargo build --release
+RUSTFLAGS="--remap-path-prefix=${SCRIPT_DIR}=/src --remap-path-prefix=${HOME}=/build" cargo build --release
 
 SO_SRC="target/release/libt480s_fingerprint_v2.so"
 if [[ ! -f "${SO_SRC}" ]]; then

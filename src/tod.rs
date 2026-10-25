@@ -186,7 +186,7 @@ pub const fn fp_finger_to_synaptics_subtype(fp_finger: u32) -> u16 {
     }
 }
 
-/// Resolve a Linux username (e.g. `"corrado"`) to its numeric UID via `/etc/passwd` (defaulting to `1000`).
+/// Resolve a Linux username (e.g. `"alice"`) to its numeric UID via `/etc/passwd` (defaulting to `1000`).
 pub fn uid_from_username(username: &str) -> u32 {
     if username.is_empty() {
         return 1000;

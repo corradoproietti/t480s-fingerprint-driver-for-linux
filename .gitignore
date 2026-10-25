@@ -1,3 +1,7 @@
 /target
 /pairing_06cb_009a.json
 /debian/.deb-build
+build_deb.sh
+build.sh
+Cargo.lock
+libfprint-2-tod1-synaptics009a_0.1.0-1_amd64.deb
