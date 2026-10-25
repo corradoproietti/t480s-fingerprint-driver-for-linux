@@ -1,0 +1,29 @@
+[package]
+name = "t480s_fingerprint_v2"
+version = "0.1.0"
+edition = "2024"
+authors = ["Corrado Proietti"]
+license = "MIT OR LGPL-2.1-or-later"
+repository = "https://github.com/corradoproietti/t480s-fingerprint-driver-for-linux"
+homepage = "https://github.com/corradoproietti/t480s-fingerprint-driver-for-linux"
+description = "T480s Fingerprint Driver for Linux - Native libfprint-2-tod1 Match-on-Chip driver for Lenovo ThinkPad T480s Synaptics Metallica MIS (06cb:009a)"
+readme = "README.md"
+keywords = ["fingerprint", "libfprint", "fprintd", "thinkpad", "synaptics"]
+categories = ["hardware-support", "os::linux-apis"]
+
+[lib]
+name = "t480s_fingerprint_v2"
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc"] }
+hex = "0.4"
+hmac = "0.12"
+p256 = { version = "0.13", features = ["ecdh", "ecdsa"] }
+rand = "0.8"
+rusb = "0.9"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+thiserror = "2.0"
