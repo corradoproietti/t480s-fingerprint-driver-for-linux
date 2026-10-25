@@ -59,7 +59,7 @@ sudo apt install -y fprintd libfprint-2-2 libfprint-2-tod1 libpam-fprintd
 
 ## Installation from `.deb` Package (Recommended)
 
-Download the `.deb` package from the repository / **Releases** section (or build it via `./build_deb.sh`) and install it with `dpkg` or `apt`:
+Download `libfprint-2-tod1-synaptics009a_0.1.0-1_amd64.deb` from the [**Releases**](https://github.com/corradoproietti/t480s-fingerprint-driver-for-linux/releases) page and install it with `dpkg`:
 
 ```bash
 sudo dpkg -i libfprint-2-tod1-synaptics009a_0.1.0-1_amd64.deb
@@ -80,27 +80,10 @@ On Ubuntu / Debian / Linux Mint:
 
 ```bash
 sudo apt update
-sudo apt install -y build-essential cargo rustc pkg-config libusb-1.0-0-dev libfprint-2-tod1 dpkg-dev
+sudo apt install -y build-essential cargo rustc pkg-config libusb-1.0-0-dev libfprint-2-tod1
 ```
 
-### 2. Building the `.deb` Package
-
-From the repository root, run the packaging script:
-
-```bash
-./build_deb.sh
-```
-
-The script compiles the driver in `--release` mode, strips debug symbols, and produces:
-`libfprint-2-tod1-synaptics009a_0.1.0-1_amd64.deb`
-
-Install it with:
-
-```bash
-sudo dpkg -i libfprint-2-tod1-synaptics009a_0.1.0-1_amd64.deb
-```
-
-### 3. Manual `.so` Installation (without `.deb`)
+### 2. Compile and Install
 
 ```bash
 cargo build --release
@@ -180,7 +163,6 @@ Supported `SYNAPTICS_009A_LOG` levels: `error`, `warn`, `info` (default), `debug
 | :--- | :--- |
 | [`Cargo.toml`](Cargo.toml) | Rust crate manifest (`cdylib` + `rlib`) |
 | [`build.rs`](build.rs) | Build script for linking against `libfprint-2-tod.so.1` and `libglib-2.0.so.0` |
-| [`build_deb.sh`](build_deb.sh) | Automated script to compile and package the `.deb` installer |
 | [`calib_06cb_009a.bin`](calib_06cb_009a.bin) | 2D capacitive calibration blob (`13,440` bytes) for sensor `0x0199` |
 | [`src/lib.rs`](src/lib.rs) | Library entrypoint and public exports |
 | [`src/tod.rs`](src/tod.rs) | `libfprint-2-tod1` GObject plugin (`FpDeviceClass` vtable, pre-warming, suspend/resume) |
