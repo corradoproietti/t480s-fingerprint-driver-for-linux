@@ -49,20 +49,25 @@ const TOD_TYPE_NAME: &CStr = c"FpiDeviceSynaptics009aTod";
 /// Number of enrollment touches required by the `06cb:009a` QMatcher firmware (`FpDeviceClass.nr_enroll_stages` @ `+0xa8`).
 pub const TOD_NR_ENROLL_STAGES: c_int = 12;
 
-/// `FpDeviceType` enum value for USB fingerprint readers (`FP_DEVICE_TYPE_USB = 1`).
+/// `FpDeviceType` enum value for USB fingerprint readers (`1` on Debian/Ubuntu TOD-1, `2` on Fedora libfprint >= 1.94.100).
+#[cfg(not(fedora_libfprint))]
 const FP_DEVICE_TYPE_USB: u32 = 1;
+#[cfg(fedora_libfprint)]
+const FP_DEVICE_TYPE_USB: u32 = 2;
+
 /// `FpScanType` enum value for press-type capacitive touch sensors (`FP_SCAN_TYPE_PRESS = 1`).
 const FP_SCAN_TYPE_PRESS: u32 = 1;
 
-/// `FpiDeviceAction` values from `libfprint-2-tod.so.1` (`fpi_device_action_get_type`).
+/// `FpiDeviceAction` values (`fpi_device_action_get_type`).
 const FPI_DEVICE_ACTION_VERIFY: c_int = 5;
 const FPI_DEVICE_ACTION_IDENTIFY: c_int = 6;
 
-/// `FpiMatchResult` values from `libfprint-2-tod.so.1` (`fpi_match_result_get_type`).
+/// `FpiMatchResult` values (`fpi_match_result_get_type`).
 const FPI_MATCH_FAIL: c_int = 0;
 const FPI_MATCH_SUCCESS: c_int = 1;
 
-/// `FpIdEntry` USB table entry (`16` bytes on x86_64: `pid: u32, vid: u32, driver_data: u64`).
+/// `FpIdEntry` USB table entry (`16` bytes on Debian/Ubuntu TOD-1, `32` bytes on Fedora libfprint >= 1.94.100).
+#[cfg(not(fedora_libfprint))]
 #[repr(C)]
 pub struct FpIdEntry {
     pub pid: u32,
@@ -70,9 +75,19 @@ pub struct FpIdEntry {
     pub driver_data: u64,
 }
 
+#[cfg(fedora_libfprint)]
+#[repr(C)]
+pub struct FpIdEntry {
+    pub pid: u32,
+    pub vid: u32,
+    pub driver_data: u64,
+    pub _pad: [u64; 2],
+}
+
 unsafe impl Sync for FpIdEntry {}
 
 /// Null-terminated USB device ID table matching `06cb:009a`.
+#[cfg(not(fedora_libfprint))]
 static ID_TABLE: [FpIdEntry; 2] = [
     FpIdEntry {
         pid: 0x009a,
@@ -86,6 +101,22 @@ static ID_TABLE: [FpIdEntry; 2] = [
     },
 ];
 
+#[cfg(fedora_libfprint)]
+static ID_TABLE: [FpIdEntry; 2] = [
+    FpIdEntry {
+        pid: 0x009a,
+        vid: 0x06cb,
+        driver_data: 0,
+        _pad: [0; 2],
+    },
+    FpIdEntry {
+        pid: 0,
+        vid: 0,
+        driver_data: 0,
+        _pad: [0; 2],
+    },
+];
+
 /// GLib `GPtrArray` C layout used by `fpi_device_get_identify_data`.
 #[repr(C)]
 pub struct GPtrArray {
@@ -94,7 +125,8 @@ pub struct GPtrArray {
 }
 
 /// Strongly typed `FpDeviceClass` C vtable layout (`0x208` bytes on x86_64) matching
-/// `libfprint-2-tod.so.1` (`fpi-device.h` / `fpi_device_class_auto_initialize_features` @ `0xef30`).
+/// Debian/Ubuntu `libfprint-2-tod.so.1` (`fpi-device.h`).
+#[cfg(not(fedora_libfprint))]
 #[repr(C)]
 pub struct FpDeviceClass {
     pub parent_class: [u8; 0x88],
@@ -126,12 +158,13 @@ pub struct FpDeviceClass {
     pub _reserved: [u8; 0xd8],
 }
 
-// Compile-time ABI layout verification against `libfprint-2-tod.so.1` (`x86_64-linux-gnu`)
+#[cfg(not(fedora_libfprint))]
 const _: () = {
     assert!(size_of::<FpDeviceClass>() == 0x208);
     assert!(offset_of!(FpDeviceClass, id) == 0x88);
     assert!(offset_of!(FpDeviceClass, full_name) == 0x90);
     assert!(offset_of!(FpDeviceClass, device_type) == 0x98);
+    assert!(offset_of!(FpDeviceClass, features) == 0x9c);
     assert!(offset_of!(FpDeviceClass, id_table) == 0xa0);
     assert!(offset_of!(FpDeviceClass, nr_enroll_stages) == 0xa8);
     assert!(offset_of!(FpDeviceClass, scan_type) == 0xac);
@@ -144,8 +177,67 @@ const _: () = {
     assert!(offset_of!(FpDeviceClass, identify) == 0xe0);
     assert!(offset_of!(FpDeviceClass, delete) == 0xf8);
     assert!(offset_of!(FpDeviceClass, cancel) == 0x100);
-    assert!(offset_of!(FpDeviceClass, temp_hot_seconds) == 0x10c);
+    assert!(offset_of!(FpDeviceClass, temp_warm_seconds) == 0x108);
     assert!(offset_of!(FpDeviceClass, clear_storage) == 0x118);
+    assert!(offset_of!(FpDeviceClass, suspend) == 0x120);
+    assert!(offset_of!(FpDeviceClass, resume) == 0x128);
+};
+
+/// Strongly typed `FpDeviceClass` C vtable layout (`0x130` bytes on x86_64) matching
+/// Fedora `libfprint-2.so.2.0.0` (`libfprint-1.94.100`).
+#[cfg(fedora_libfprint)]
+#[repr(C)]
+pub struct FpDeviceClass {
+    pub parent_class: [u8; 0x88],
+    pub id: *const c_char,
+    pub full_name: *const c_char,
+    pub device_type: u32,
+    pub _pad_9c: u32,
+    pub id_table: *const FpIdEntry,
+    pub features: u32,
+    pub nr_enroll_stages: c_int,
+    pub scan_type: u32,
+    pub temp_hot_seconds: c_int,
+    pub temp_cold_seconds: c_int,
+    pub _pad_bc: c_int,
+    pub usb_discover: Option<extern "C" fn(*mut c_void) -> c_int>,
+    pub probe: Option<extern "C" fn(*mut c_void)>,
+    pub open: Option<extern "C" fn(*mut c_void)>,
+    pub close: Option<extern "C" fn(*mut c_void)>,
+    pub enroll: Option<extern "C" fn(*mut c_void)>,
+    pub verify: Option<extern "C" fn(*mut c_void)>,
+    pub identify: Option<extern "C" fn(*mut c_void)>,
+    pub capture: Option<extern "C" fn(*mut c_void)>,
+    pub list: Option<extern "C" fn(*mut c_void)>,
+    pub delete: Option<extern "C" fn(*mut c_void)>,
+    pub clear_storage: Option<extern "C" fn(*mut c_void)>,
+    pub cancel: Option<extern "C" fn(*mut c_void)>,
+    pub suspend: Option<extern "C" fn(*mut c_void)>,
+    pub resume: Option<extern "C" fn(*mut c_void)>,
+}
+
+#[cfg(fedora_libfprint)]
+const _: () = {
+    assert!(size_of::<FpIdEntry>() == 0x20);
+    assert!(size_of::<FpDeviceClass>() == 0x130);
+    assert!(offset_of!(FpDeviceClass, id) == 0x88);
+    assert!(offset_of!(FpDeviceClass, full_name) == 0x90);
+    assert!(offset_of!(FpDeviceClass, device_type) == 0x98);
+    assert!(offset_of!(FpDeviceClass, id_table) == 0xa0);
+    assert!(offset_of!(FpDeviceClass, features) == 0xa8);
+    assert!(offset_of!(FpDeviceClass, nr_enroll_stages) == 0xac);
+    assert!(offset_of!(FpDeviceClass, scan_type) == 0xb0);
+    assert!(offset_of!(FpDeviceClass, temp_hot_seconds) == 0xb4);
+    assert!(offset_of!(FpDeviceClass, usb_discover) == 0xc0);
+    assert!(offset_of!(FpDeviceClass, probe) == 0xc8);
+    assert!(offset_of!(FpDeviceClass, open) == 0xd0);
+    assert!(offset_of!(FpDeviceClass, close) == 0xd8);
+    assert!(offset_of!(FpDeviceClass, enroll) == 0xe0);
+    assert!(offset_of!(FpDeviceClass, verify) == 0xe8);
+    assert!(offset_of!(FpDeviceClass, identify) == 0xf0);
+    assert!(offset_of!(FpDeviceClass, delete) == 0x108);
+    assert!(offset_of!(FpDeviceClass, clear_storage) == 0x110);
+    assert!(offset_of!(FpDeviceClass, cancel) == 0x118);
     assert!(offset_of!(FpDeviceClass, suspend) == 0x120);
     assert!(offset_of!(FpDeviceClass, resume) == 0x128);
 };
@@ -198,18 +290,10 @@ impl SynapticsPrintMetadata {
 
 unsafe extern "C" {
     fn atexit(cb: extern "C" fn()) -> c_int;
+    fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
 
     // GLib / GObject FFI
     fn g_intern_static_string(string: *const c_char) -> *const c_char;
-    fn g_type_register_static_simple(
-        parent_type: GType,
-        type_name: *const c_char,
-        class_size: c_uint,
-        class_init: extern "C" fn(*mut c_void, *mut c_void),
-        instance_size: c_uint,
-        instance_init: extern "C" fn(*mut c_void, *mut c_void),
-        flags: c_uint,
-    ) -> GType;
     fn g_type_class_peek_parent(g_class: *mut c_void) -> *mut c_void;
     fn g_type_check_class_cast(g_class: *mut c_void, is_a_type: GType) -> *mut c_void;
     fn g_object_ref(object: *mut c_void) -> *mut c_void;
@@ -229,11 +313,26 @@ unsafe extern "C" {
     fn g_variant_unref(value: *mut c_void);
     fn g_idle_add(function: extern "C" fn(*mut c_void) -> c_int, data: *mut c_void) -> c_uint;
 
-    // libfprint-2.so.2 & libfprint-2-tod.so.1 FFI
+    // Public exported symbols in libfprint-2.so.2
     fn fp_device_get_type() -> GType;
     fn fp_print_get_finger(print: *mut c_void) -> c_uint;
     fn fp_print_get_username(print: *mut c_void) -> *const c_char;
+}
 
+#[cfg(not(fedora_libfprint))]
+unsafe extern "C" {
+    fn g_type_register_static_simple(
+        parent_type: GType,
+        type_name: *const c_char,
+        class_size: c_uint,
+        class_init: extern "C" fn(*mut c_void, *mut c_void),
+        instance_size: c_uint,
+        instance_init: extern "C" fn(*mut c_void, *mut c_void),
+        flags: c_uint,
+    ) -> GType;
+
+    // libfprint-2-tod.so.1 exported internal driver API
+    fn fpi_device_class_auto_initialize_features(device_class: *mut c_void);
     fn fpi_print_set_type(print: *mut c_void, print_type: c_uint);
     fn fpi_device_set_nr_enroll_stages(device: *mut c_void, enroll_stages: c_int);
     fn fpi_device_probe_complete(
@@ -245,7 +344,6 @@ unsafe extern "C" {
     fn fpi_device_open_complete(device: *mut c_void, error: *mut c_void);
     fn fpi_device_close_complete(device: *mut c_void, error: *mut c_void);
     fn fpi_device_get_current_action(device: *mut c_void) -> c_int;
-
     fn fpi_device_get_enroll_data(device: *mut c_void, print: *mut *mut c_void);
     fn fpi_device_enroll_progress(
         device: *mut c_void,
@@ -254,7 +352,6 @@ unsafe extern "C" {
         error: *mut c_void,
     );
     fn fpi_device_enroll_complete(device: *mut c_void, print: *mut c_void, error: *mut c_void);
-
     fn fpi_device_get_verify_data(device: *mut c_void, print: *mut *mut c_void);
     fn fpi_device_verify_report(
         device: *mut c_void,
@@ -263,7 +360,6 @@ unsafe extern "C" {
         error: *mut c_void,
     );
     fn fpi_device_verify_complete(device: *mut c_void, error: *mut c_void);
-
     fn fpi_device_get_identify_data(device: *mut c_void, prints: *mut *mut GPtrArray);
     fn fpi_device_identify_report(
         device: *mut c_void,
@@ -272,15 +368,276 @@ unsafe extern "C" {
         error: *mut c_void,
     );
     fn fpi_device_identify_complete(device: *mut c_void, error: *mut c_void);
-
     fn fpi_device_get_delete_data(device: *mut c_void, print: *mut *mut c_void);
     fn fpi_device_delete_complete(device: *mut c_void, error: *mut c_void);
     fn fpi_device_clear_storage_complete(device: *mut c_void, error: *mut c_void);
     fn fpi_device_suspend_complete(device: *mut c_void, error: *mut c_void);
     fn fpi_device_resume_complete(device: *mut c_void, error: *mut c_void);
-
     fn fpi_device_retry_new(retry_code: c_int) -> *mut c_void;
     fn fpi_device_error_new(error_code: c_int) -> *mut c_void;
+}
+
+#[cfg(not(fedora_libfprint))]
+unsafe fn real_g_type_register_static_simple(
+    parent_type: GType,
+    type_name: *const c_char,
+    class_size: c_uint,
+    class_init: extern "C" fn(*mut c_void, *mut c_void),
+    instance_size: c_uint,
+    instance_init: extern "C" fn(*mut c_void, *mut c_void),
+    flags: c_uint,
+) -> GType {
+    unsafe {
+        g_type_register_static_simple(
+            parent_type,
+            type_name,
+            class_size,
+            class_init,
+            instance_size,
+            instance_init,
+            flags,
+        )
+    }
+}
+
+#[cfg(fedora_libfprint)]
+const RTLD_DEFAULT: *mut c_void = ptr::null_mut();
+#[cfg(fedora_libfprint)]
+const RTLD_NEXT: *mut c_void = (-1isize) as *mut c_void;
+
+#[cfg(fedora_libfprint)]
+static LIBFPRINT_BASE: OnceLock<usize> = OnceLock::new();
+
+/// Compute the runtime load base address of `/usr/lib64/libfprint-2.so.2.0.0` from `fp_device_get_type` (`+0x4f300`).
+#[cfg(fedora_libfprint)]
+fn libfprint_base() -> usize {
+    *LIBFPRINT_BASE.get_or_init(|| unsafe {
+        let sym = dlsym(RTLD_DEFAULT, c"fp_device_get_type".as_ptr());
+        assert!(!sym.is_null(), "dlsym(fp_device_get_type) returned NULL");
+        (sym as usize) - 0x4f300
+    })
+}
+
+#[cfg(fedora_libfprint)]
+unsafe fn real_g_type_register_static_simple(
+    parent_type: GType,
+    type_name: *const c_char,
+    class_size: c_uint,
+    class_init: extern "C" fn(*mut c_void, *mut c_void),
+    instance_size: c_uint,
+    instance_init: extern "C" fn(*mut c_void, *mut c_void),
+    flags: c_uint,
+) -> GType {
+    static REAL_FN: OnceLock<usize> = OnceLock::new();
+    let addr = *REAL_FN.get_or_init(|| unsafe {
+        let mut p = dlsym(RTLD_NEXT, c"g_type_register_static_simple".as_ptr());
+        if p.is_null() {
+            p = dlsym(RTLD_DEFAULT, c"g_type_register_static_simple".as_ptr());
+        }
+        assert!(!p.is_null(), "dlsym(g_type_register_static_simple) failed");
+        p as usize
+    });
+    let f: unsafe extern "C" fn(
+        GType,
+        *const c_char,
+        c_uint,
+        extern "C" fn(*mut c_void, *mut c_void),
+        c_uint,
+        extern "C" fn(*mut c_void, *mut c_void),
+        c_uint,
+    ) -> GType = unsafe { std::mem::transmute(addr) };
+    unsafe {
+        f(
+            parent_type,
+            type_name,
+            class_size,
+            class_init,
+            instance_size,
+            instance_init,
+            flags,
+        )
+    }
+}
+
+#[cfg(fedora_libfprint)]
+unsafe fn fpi_device_class_auto_initialize_features(device_class: *mut c_void) {
+    let f: unsafe extern "C" fn(*mut c_void) =
+        unsafe { std::mem::transmute(libfprint_base() + 0xa8b10) };
+    unsafe { f(device_class) }
+}
+
+#[cfg(fedora_libfprint)]
+unsafe fn fpi_print_set_type(print: *mut c_void, print_type: c_uint) {
+    let f: unsafe extern "C" fn(*mut c_void, c_uint) =
+        unsafe { std::mem::transmute(libfprint_base() + 0xab550) };
+    unsafe { f(print, print_type) }
+}
+
+#[cfg(fedora_libfprint)]
+unsafe fn fpi_device_set_nr_enroll_stages(device: *mut c_void, enroll_stages: c_int) {
+    let f: unsafe extern "C" fn(*mut c_void, c_int) =
+        unsafe { std::mem::transmute(libfprint_base() + 0xa8c10) };
+    unsafe { f(device, enroll_stages) }
+}
+
+#[cfg(fedora_libfprint)]
+unsafe fn fpi_device_probe_complete(
+    device: *mut c_void,
+    device_id: *const c_char,
+    device_name: *const c_char,
+    error: *mut c_void,
+) {
+    let f: unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char, *mut c_void) =
+        unsafe { std::mem::transmute(libfprint_base() + 0xab7f0) };
+    unsafe { f(device, device_id, device_name, error) }
+}
+
+#[cfg(fedora_libfprint)]
+unsafe fn fpi_device_open_complete(device: *mut c_void, error: *mut c_void) {
+    let f: unsafe extern "C" fn(*mut c_void, *mut c_void) =
+        unsafe { std::mem::transmute(libfprint_base() + 0xab9d0) };
+    unsafe { f(device, error) }
+}
+
+#[cfg(fedora_libfprint)]
+unsafe fn fpi_device_close_complete(device: *mut c_void, error: *mut c_void) {
+    let f: unsafe extern "C" fn(*mut c_void, *mut c_void) =
+        unsafe { std::mem::transmute(libfprint_base() + 0xabb10) };
+    unsafe { f(device, error) }
+}
+
+#[cfg(fedora_libfprint)]
+unsafe fn fpi_device_get_current_action(device: *mut c_void) -> c_int {
+    let f: unsafe extern "C" fn(*mut c_void) -> c_int =
+        unsafe { std::mem::transmute(libfprint_base() + 0xa9640) };
+    unsafe { f(device) }
+}
+
+#[cfg(fedora_libfprint)]
+unsafe fn fpi_device_get_enroll_data(device: *mut c_void, print: *mut *mut c_void) {
+    let f: unsafe extern "C" fn(*mut c_void, *mut *mut c_void) =
+        unsafe { std::mem::transmute(libfprint_base() + 0xa9820) };
+    unsafe { f(device, print) }
+}
+
+#[cfg(fedora_libfprint)]
+unsafe fn fpi_device_enroll_progress(
+    device: *mut c_void,
+    completed_stages: c_int,
+    print: *mut c_void,
+    error: *mut c_void,
+) {
+    let f: unsafe extern "C" fn(*mut c_void, c_int, *mut c_void, *mut c_void) =
+        unsafe { std::mem::transmute(libfprint_base() + 0xaaa70) };
+    unsafe { f(device, completed_stages, print, error) }
+}
+
+#[cfg(fedora_libfprint)]
+unsafe fn fpi_device_enroll_complete(device: *mut c_void, print: *mut c_void, error: *mut c_void) {
+    let f: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) =
+        unsafe { std::mem::transmute(libfprint_base() + 0xabd20) };
+    unsafe { f(device, print, error) }
+}
+
+#[cfg(fedora_libfprint)]
+unsafe fn fpi_device_get_verify_data(device: *mut c_void, print: *mut *mut c_void) {
+    let f: unsafe extern "C" fn(*mut c_void, *mut *mut c_void) =
+        unsafe { std::mem::transmute(libfprint_base() + 0xa9900) };
+    unsafe { f(device, print) }
+}
+
+#[cfg(fedora_libfprint)]
+unsafe fn fpi_device_verify_report(
+    device: *mut c_void,
+    result: c_int,
+    print: *mut c_void,
+    error: *mut c_void,
+) {
+    let f: unsafe extern "C" fn(*mut c_void, c_int, *mut c_void, *mut c_void) =
+        unsafe { std::mem::transmute(libfprint_base() + 0xaae50) };
+    unsafe { f(device, result, print, error) }
+}
+
+#[cfg(fedora_libfprint)]
+unsafe fn fpi_device_verify_complete(device: *mut c_void, error: *mut c_void) {
+    let f: unsafe extern "C" fn(*mut c_void, *mut c_void) =
+        unsafe { std::mem::transmute(libfprint_base() + 0xac080) };
+    unsafe { f(device, error) }
+}
+
+#[cfg(fedora_libfprint)]
+unsafe fn fpi_device_get_identify_data(device: *mut c_void, prints: *mut *mut GPtrArray) {
+    let f: unsafe extern "C" fn(*mut c_void, *mut *mut GPtrArray) =
+        unsafe { std::mem::transmute(libfprint_base() + 0xa99e0) };
+    unsafe { f(device, prints) }
+}
+
+#[cfg(fedora_libfprint)]
+unsafe fn fpi_device_identify_report(
+    device: *mut c_void,
+    match_print: *mut c_void,
+    print: *mut c_void,
+    error: *mut c_void,
+) {
+    let f: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *mut c_void) =
+        unsafe { std::mem::transmute(libfprint_base() + 0xab200) };
+    unsafe { f(device, match_print, print, error) }
+}
+
+#[cfg(fedora_libfprint)]
+unsafe fn fpi_device_identify_complete(device: *mut c_void, error: *mut c_void) {
+    let f: unsafe extern "C" fn(*mut c_void, *mut c_void) =
+        unsafe { std::mem::transmute(libfprint_base() + 0xac2c0) };
+    unsafe { f(device, error) }
+}
+
+#[cfg(fedora_libfprint)]
+unsafe fn fpi_device_get_delete_data(device: *mut c_void, print: *mut *mut c_void) {
+    let f: unsafe extern "C" fn(*mut c_void, *mut *mut c_void) =
+        unsafe { std::mem::transmute(libfprint_base() + 0xa9ac0) };
+    unsafe { f(device, print) }
+}
+
+#[cfg(fedora_libfprint)]
+unsafe fn fpi_device_delete_complete(device: *mut c_void, error: *mut c_void) {
+    let f: unsafe extern "C" fn(*mut c_void, *mut c_void) =
+        unsafe { std::mem::transmute(libfprint_base() + 0xac6c0) };
+    unsafe { f(device, error) }
+}
+
+#[cfg(fedora_libfprint)]
+unsafe fn fpi_device_clear_storage_complete(device: *mut c_void, error: *mut c_void) {
+    let f: unsafe extern "C" fn(*mut c_void, *mut c_void) =
+        unsafe { std::mem::transmute(libfprint_base() + 0xac9b0) };
+    unsafe { f(device, error) }
+}
+
+#[cfg(fedora_libfprint)]
+unsafe fn fpi_device_suspend_complete(device: *mut c_void, error: *mut c_void) {
+    let f: unsafe extern "C" fn(*mut c_void, *mut c_void) =
+        unsafe { std::mem::transmute(libfprint_base() + 0xaa470) };
+    unsafe { f(device, error) }
+}
+
+#[cfg(fedora_libfprint)]
+unsafe fn fpi_device_resume_complete(device: *mut c_void, error: *mut c_void) {
+    let f: unsafe extern "C" fn(*mut c_void, *mut c_void) =
+        unsafe { std::mem::transmute(libfprint_base() + 0xaa730) };
+    unsafe { f(device, error) }
+}
+
+#[cfg(fedora_libfprint)]
+unsafe fn fpi_device_retry_new(retry_code: c_int) -> *mut c_void {
+    let f: unsafe extern "C" fn(c_int) -> *mut c_void =
+        unsafe { std::mem::transmute(libfprint_base() + 0xa8990) };
+    unsafe { f(retry_code) }
+}
+
+#[cfg(fedora_libfprint)]
+unsafe fn fpi_device_error_new(error_code: c_int) -> *mut c_void {
+    let f: unsafe extern "C" fn(c_int) -> *mut c_void =
+        unsafe { std::mem::transmute(libfprint_base() + 0xa8390) };
+    unsafe { f(error_code) }
 }
 
 /// Convert `libfprint-2`'s `FpFinger` enum (`1..=10`) to Synaptics WINBIO subtype (`1..=10`).
@@ -324,11 +681,22 @@ pub fn uid_from_username(username: &str) -> u32 {
     1000
 }
 
+static CALIB_MEM_CACHE: OnceLock<Mutex<Option<Vec<u8>>>> = OnceLock::new();
+
+fn calib_mem_cache() -> &'static Mutex<Option<Vec<u8>>> {
+    CALIB_MEM_CACHE.get_or_init(|| Mutex::new(None))
+}
+
 /// Load the 13,440-byte sensor calibration blob (`calib_06cb_009a.bin`), falling back to the embedded calibration data.
 ///
 /// # Arguments
 /// *(none)*
 pub fn load_calibration_blob() -> Vec<u8> {
+    if let Ok(guard) = calib_mem_cache().lock()
+        && let Some(ref cached) = *guard
+    {
+        return cached.clone();
+    }
     for candidate in [
         "/var/lib/fprint/.synaptics_06cb_009a_calib.bin",
         "/var/run/python-validity/calib-data.bin",
@@ -341,6 +709,38 @@ pub fn load_calibration_blob() -> Vec<u8> {
         }
     }
     EMBEDDED_CALIB_009A.to_vec()
+}
+
+/// Ensure this specific physical `06cb:009a` sensor has its own 13,440-byte 2D calibration table
+/// on disk (`/var/lib/fprint/.synaptics_06cb_009a_calib.bin`) AND a matching `0x5002` clean-slate
+/// baseline image in Flash Partition 6.
+pub fn ensure_sensor_calibrated(
+    session: &mut SensorSession<SynapticsUsbTransport>,
+) -> Result<Vec<u8>> {
+    const CALIB_CACHE_PATH: &str = "/var/lib/fprint/.synaptics_06cb_009a_calib.bin";
+    if let Ok(bytes) = std::fs::read(CALIB_CACHE_PATH)
+        && bytes.len() >= 13440
+        && session.check_clean_slate().unwrap_or(false)
+    {
+        if let Ok(mut guard) = calib_mem_cache().lock() {
+            *guard = Some(bytes.clone());
+        }
+        return Ok(bytes);
+    }
+
+    drv_info!(
+        "Sensor calibration missing or Flash Partition 6 clean-slate invalid — running 2D calibration now..."
+    );
+    let calib_data = session.calibrate_sensor()?;
+    if let Err(e) = std::fs::write(CALIB_CACHE_PATH, &calib_data) {
+        drv_warn!("Could not write calibration file to {CALIB_CACHE_PATH}: {e}");
+    } else {
+        drv_info!("Saved sensor-specific 2D calibration table to {CALIB_CACHE_PATH}");
+    }
+    if let Ok(mut guard) = calib_mem_cache().lock() {
+        *guard = Some(calib_data.clone());
+    }
+    Ok(calib_data)
 }
 
 /// Load the host-sensor TLS pairing bundle from disk cache, or read and decrypt it directly
@@ -442,6 +842,7 @@ fn connect_and_initialize_session(
     session.establish_tls_session(&bundle)?;
     // Pre-cache immutable factory calibration values (0x6f) once during session setup
     let _ = session.get_factory_calibration_values()?;
+    let _ = ensure_sensor_calibrated(&mut session)?;
     Ok(session)
 }
 
@@ -1140,23 +1541,73 @@ extern "C" fn fpi_device_synaptics_009a_tod_class_init(
         dev_class.identify = Some(dev_verify);
         dev_class.delete = Some(dev_delete);
         dev_class.cancel = Some(dev_cancel);
-        dev_class.temp_hot_seconds = -1; // disable thermal throttling
+        #[cfg(not(fedora_libfprint))]
+        {
+            dev_class.temp_warm_seconds = -1; // disable thermal throttling
+        }
+        #[cfg(fedora_libfprint)]
+        {
+            dev_class.temp_hot_seconds = -1; // disable thermal throttling
+        }
         dev_class.clear_storage = Some(dev_clear_storage);
         dev_class.suspend = Some(dev_suspend);
         dev_class.resume = Some(dev_resume);
+
+        fpi_device_class_auto_initialize_features(klass);
     }
 }
 
 static REGISTERED_GTYPE: OnceLock<GType> = OnceLock::new();
 
-/// Entry point symbol looked up by `/usr/lib/x86_64-linux-gnu/libfprint-2-tod.so.1`
+/// LD_PRELOAD hook for `g_type_register_static_simple` so Fedora's unmodified
+/// `/usr/lib64/libfprint-2.so.2` binds `FpiDeviceSynaptics` directly to our
+/// native Rust `06cb:009a` Match-on-Chip driver vtable.
+#[cfg(fedora_libfprint)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn g_type_register_static_simple(
+    parent_type: GType,
+    type_name: *const c_char,
+    class_size: c_uint,
+    class_init: extern "C" fn(*mut c_void, *mut c_void),
+    instance_size: c_uint,
+    instance_init: extern "C" fn(*mut c_void, *mut c_void),
+    flags: c_uint,
+) -> GType {
+    unsafe {
+        if !type_name.is_null() && CStr::from_ptr(type_name).to_bytes() == b"FpiDeviceSynaptics" {
+            drv_info!(
+                "Intercepted FpiDeviceSynaptics in Fedora libfprint-2.so.2 -> registering native Rust 06cb:009a MoC driver"
+            );
+            return real_g_type_register_static_simple(
+                parent_type,
+                type_name,
+                size_of::<FpDeviceClass>() as c_uint,
+                fpi_device_synaptics_009a_tod_class_init,
+                0x38,
+                fpi_device_synaptics_009a_tod_init,
+                flags,
+            );
+        }
+        real_g_type_register_static_simple(
+            parent_type,
+            type_name,
+            class_size,
+            class_init,
+            instance_size,
+            instance_init,
+            flags,
+        )
+    }
+}
+
+/// Entry point symbol looked up by `libfprint-2-tod.so.1`
 /// (`tod-shared-loader.c`: `fpi_tod_shared_driver_get_type`).
 ///
 /// # Arguments
 /// *(none)*
 ///
 /// # Safety
-/// Must be called from a process with GLib/GObject and `libfprint-2-tod.so.1` initialized.
+/// Must be called from a process with GLib/GObject and `libfprint-2` initialized.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fpi_tod_shared_driver_get_type() -> GType {
     *REGISTERED_GTYPE.get_or_init(|| unsafe {
@@ -1165,7 +1616,7 @@ pub unsafe extern "C" fn fpi_tod_shared_driver_get_type() -> GType {
         );
         let name = g_intern_static_string(TOD_TYPE_NAME.as_ptr());
         let parent = fp_device_get_type();
-        g_type_register_static_simple(
+        real_g_type_register_static_simple(
             parent,
             name,
             size_of::<FpDeviceClass>() as c_uint,

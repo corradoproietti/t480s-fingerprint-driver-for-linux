@@ -534,4 +534,29 @@ mod tests {
             })
         ));
     }
+
+    /// Verify 2D capacitive calibration frame averaging and signed-clipped accumulation for sensor `0x0199`.
+    #[test]
+    fn test_calibration_frame_averaging_and_scaling() {
+        use crate::capture::{average_calibration_frames_0199, process_calibration_results_0199};
+        let mut raw = vec![0x80u8; 2 * 224 * 120];
+        // Set second frame (offset 26880) first interleaved pair to 100 and 140 -> avg = 120
+        raw[26880 + 8] = 100;
+        raw[26880 + 120 + 8] = 140;
+        let avg = average_calibration_frames_0199(&raw).expect("averaging should succeed");
+        assert_eq!(avg.len(), 13440);
+        assert_eq!(avg[8], 120);
+
+        let mut calib = Vec::new();
+        process_calibration_results_0199(&mut calib, &avg);
+        assert_eq!(calib.len(), 13440);
+        // (120 - 128) * 10 / 34 = -80 / 34 = -2 -> 0xfe (254)
+        assert_eq!(calib[8], 0xfe);
+        // Neutral 0x80 bytes scale to 0
+        assert_eq!(calib[9], 0x00);
+
+        // Second iteration accumulates signed values (-2 + -2 = -4 -> 0xfc)
+        process_calibration_results_0199(&mut calib, &avg);
+        assert_eq!(calib[8], 0xfc);
+    }
 }

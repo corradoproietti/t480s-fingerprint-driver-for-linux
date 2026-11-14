@@ -1,8 +1,8 @@
 # T480s Fingerprint Driver for Linux
 
-Native **Rust** Linux driver (**Touch OEM Driver** `libfprint-2-tod1`) with full **Match-on-Chip (MoC)** support for the **Synaptics Metallica MIS Touch Fingerprint Reader (`06cb:009a`)** integrated into **Lenovo ThinkPad T480s**, **T480**, **X280**, and **P52s** laptops.
+Native **Rust** Linux driver (**Touch OEM Driver** `libfprint-2-tod1`) with full **Match-on-Chip (MoC)** support for the **Synaptics Metallica MIS Touch Fingerprint Reader (`06cb:009a`)** integrated into **Lenovo ThinkPad T480s**, **T480**, **T580**, **X280**, and **P52s** laptops.
 
-Unlike legacy Python wrappers (`python3-validity` / `open-fprintd`), this driver compiles into a single native C-ABI shared library (`libfprint-2-tod1-synaptics009a.so`) loaded directly by the official Ubuntu/Debian **`fprintd`** daemon via `libfprint-2-tod.so.1`.
+Unlike legacy Python wrappers (`python3-validity` / `open-fprintd`), this driver compiles into a single native C-ABI shared library (`libfprint-2-tod1-synaptics009a.so`) loaded directly by the official **`fprintd`** daemon on both **Ubuntu/Debian** (`libfprint-2-tod.so.1`) and **Fedora** (`libfprint-2.so.2`).
 
 ---
 
@@ -18,6 +18,8 @@ Unlike legacy Python wrappers (`python3-validity` / `open-fprintd`), this driver
 - **Hardware Encrypted TLS 1.2 Channel (`TLS_ECDH_ECDSA_WITH_AES_256_CBC_SHA256`)**:
   - Automatic extraction and decryption of host pairing credentials from the sensor's **Flash Partition 1** (`0x40`) using host DMI (`product_name` / `product_serial`) with automatic caching in `/var/lib/fprint/.synaptics_06cb_009a_pairing.json`.
   - Every USB command and response travels encrypted inside TLS 1.2 `0x17` Application Data records (`AES-256-CBC` + `HMAC-SHA256`).
+- **Automatic Per-Sensor 2D Capacitive Calibration & Clean-Slate Persistence**:
+  - Automatically calibrates each physical `06cb:009a` sensor over USB Bulk IN `0x82` (`calibrate_sensor()`), saves the 13,440-byte per-pixel calibration table to `/var/lib/fprint/.synaptics_06cb_009a_calib.bin`, and persists the `0x5002` SHA-256 verified clean-slate baseline image to **Flash Partition 6** (`0x3f` / `0x40` / `0x41`), eliminating phantom touches (`enroll-remove-and-retry` loops) across different ThinkPad units.
 - **Instant Sensor Activation (~5 ms) & Lifecycle Management**:
   - **Background pre-warming** (`dev_probe` / `dev_init`): the TLS 1.2 handshake and factory OTP calibration (`0x6f`) are initialized when `fprintd` starts. When `sudo` or the login screen prompts for a fingerprint, the sensor LED turns on in **~5 ms**.
   - **`--no-timeout` mode included in the `.deb` package**: keeps the TLS session alive, preventing USB device resets after 30 seconds of inactivity (eliminating repeated **USBGuard** notifications).
@@ -85,13 +87,37 @@ sudo apt update
 sudo apt install -y build-essential cargo rustc pkg-config libusb-1.0-0-dev libfprint-2-tod1
 ```
 
-### 2. Compile and Install
+### 2. Compile and Install (Ubuntu / Debian / Linux Mint)
 
 ```bash
 cargo build --release
 sudo install -D -m 0644 target/release/libt480s_fingerprint_v2.so \
     /usr/lib/x86_64-linux-gnu/libfprint-2/tod-1/libfprint-2-tod1-synaptics009a.so
 sudo systemctl restart fprintd
+```
+
+### 3. Compile and Install on Fedora (`libfprint >= 1.94.x`)
+
+On Fedora, `build.rs` automatically detects `/usr/lib64/libfprint-2.so.2` and enables the `fedora_libfprint` ABI (`FpDeviceClass` `0x130` bytes) and `LD_PRELOAD` registration hook:
+
+```bash
+sudo dnf install -y cargo rust pkgconf-pkg-config libusb1-devel fprintd fprintd-pam
+cargo build --release
+sudo systemctl stop fprintd.service || true
+sudo ./target/release/probe_009a
+sudo install -m 04755 -o root -g root target/release/libt480s_fingerprint_v2.so \
+    /usr/lib64/libfprint-2-tod1-synaptics009a.so
+sudo restorecon -F /usr/lib64/libfprint-2-tod1-synaptics009a.so 2>/dev/null || true
+
+sudo mkdir -p /etc/systemd/system/fprintd.service.d
+sudo tee /etc/systemd/system/fprintd.service.d/synaptics009a.conf >/dev/null << 'EOF'
+[Service]
+Environment="LD_PRELOAD=libfprint-2-tod1-synaptics009a.so"
+ExecStart=
+ExecStart=/usr/libexec/fprintd -t
+EOF
+sudo systemctl daemon-reload
+sudo systemctl restart fprintd.service
 ```
 
 ---

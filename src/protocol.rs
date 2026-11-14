@@ -189,8 +189,12 @@ pub enum WireOpcode {
     DbCleanup = 0x1a,
     /// `0x39`: Configure sensor LED scan glow / acquisition (`VCSFW_CMD_CONFIG_ACQ`).
     ConfigureAcquisition = 0x39,
+    /// `0x3f`: Erase flash partition (`VCSFW_CMD_STORAGE_PART_ERASE`).
+    StoragePartErase = 0x3f,
     /// `0x40`: Read flash partition chunk (`VCSFW_CMD_STORAGE_PART_READ`).
     StoragePartRead = 0x40,
+    /// `0x41`: Write flash partition chunk (`VCSFW_CMD_STORAGE_PART_WRITE`).
+    StoragePartWrite = 0x41,
     /// `0x43`: Get firmware extension partition status (`VCSFW_CMD_GET_FWEXT_INFO`).
     GetFwextInfo = 0x43,
     /// `0x44`: Tunnel TLS 1.2 handshake flight (`[0x44, 0x00, 0x00, 0x00] || tls_records`).
@@ -238,7 +242,9 @@ impl WireOpcode {
             0x19 => "GetConfig",
             0x1a => "DbCleanup",
             0x39 => "ConfigureAcquisition",
+            0x3f => "StoragePartErase",
             0x40 => "StoragePartRead",
+            0x41 => "StoragePartWrite",
             0x43 => "GetFwextInfo",
             0x44 => "TlsHandshakeData",
             0x45 => "Db2GetDbInfo",
@@ -477,6 +483,70 @@ impl<T: Transport> SensorSession<T> {
         let _padding = r.read_u16_le()?;
         let actual_len = reported_len.min(r.remaining_len());
         Ok(r.read_slice(actual_len)?.to_vec())
+    }
+
+    /// Erase a flash partition (`WireOpcode::StoragePartErase` = `0x3f`, `[0x3f, part_id]`).
+    pub fn erase_partition(&mut self, part_id: u8) -> Result<()> {
+        self.db_write_enable()?;
+        let res = self.execute_cmd(&[WireOpcode::StoragePartErase as u8, part_id], 16);
+        let _ = self.db_call_cleanups();
+        let _ = res?;
+        Ok(())
+    }
+
+    /// Write a chunk to a flash partition (`WireOpcode::StoragePartWrite` = `0x41`,
+    /// `[0x41, part_id, sub_id, 0, 0, offset_le32, size_le32, data...]`).
+    pub fn write_partition_chunk(
+        &mut self,
+        part_id: u8,
+        sub_id: u8,
+        offset: u32,
+        data: &[u8],
+    ) -> Result<()> {
+        self.db_write_enable()?;
+        let mut req = Vec::with_capacity(13 + data.len());
+        req.push(WireOpcode::StoragePartWrite as u8);
+        req.push(part_id);
+        req.push(sub_id);
+        req.extend_from_slice(&0u16.to_le_bytes());
+        req.extend_from_slice(&offset.to_le_bytes());
+        req.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        req.extend_from_slice(data);
+        let res = self.execute_cmd(&req, 16);
+        let _ = self.db_call_cleanups();
+        let _ = res?;
+        Ok(())
+    }
+
+    /// Read `size` bytes from flash `part_id` starting at `start` in `0x1000`-byte blocks.
+    pub fn read_partition_all(&mut self, part_id: u8, start: u32, size: usize) -> Result<Vec<u8>> {
+        const BLOCK_SIZE: u32 = 0x1000;
+        let mut out = Vec::with_capacity(size + (BLOCK_SIZE as usize));
+        let mut addr = start;
+        let end = start + (size as u32);
+        while addr < end {
+            let chunk = self.read_partition_chunk(part_id, 1, addr, BLOCK_SIZE)?;
+            if chunk.is_empty() {
+                break;
+            }
+            out.extend_from_slice(&chunk);
+            addr += BLOCK_SIZE;
+        }
+        out.truncate(size.min(out.len()));
+        Ok(out)
+    }
+
+    /// Write `buf` to flash `part_id` starting at `ptr` in `0x1000`-byte blocks.
+    pub fn write_partition_all(&mut self, part_id: u8, mut ptr: u32, mut buf: &[u8]) -> Result<()> {
+        const BLOCK_SIZE: usize = 0x1000;
+        while !buf.is_empty() {
+            let take = buf.len().min(BLOCK_SIZE);
+            let (chunk, rest) = buf.split_at(take);
+            self.write_partition_chunk(part_id, 1, ptr, chunk)?;
+            ptr += chunk.len() as u32;
+            buf = rest;
+        }
+        Ok(())
     }
 
     /// Read Flash Partition 1 (`0x1000` bytes) and extract the host-sensor [`crate::tls::PairingBundle`].

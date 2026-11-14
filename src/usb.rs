@@ -30,6 +30,8 @@ pub const METALLICA_MIS_PID: u16 = 0x009a;
 pub const EP_CMD_OUT: u8 = 0x01;
 /// Bulk IN command response endpoint (`0x81`).
 pub const EP_RESP_IN: u8 = 0x81;
+/// Bulk IN 2D calibration / raw image stream endpoint (`0x82`).
+pub const EP_IMAGE_IN: u8 = 0x82;
 /// Interrupt IN 7-byte sensor event endpoint (`0x83`).
 pub const EP_INTR_EVENT: u8 = 0x83;
 
@@ -91,6 +93,19 @@ pub trait Transport {
     /// # Arguments
     /// * `&mut self` - Mutable transport instance.
     fn flush_interrupt_events(&mut self) {}
+
+    /// Read raw 2D calibration frames from Bulk IN Endpoint `0x82` (`130`).
+    ///
+    /// # Arguments
+    /// * `&mut self` - Mutable transport instance.
+    /// * `min_bytes` - Minimum number of bytes required from the calibration stream.
+    /// * `timeout` - Maximum wait time for the bulk read.
+    fn read_image_data(&mut self, min_bytes: usize, timeout: Duration) -> Result<Vec<u8>> {
+        let _ = (min_bytes, timeout);
+        Err(DriverError::Protocol(
+            "read_image_data (EP 0x82) not implemented for this transport".into(),
+        ))
+    }
 }
 
 /// Hardware USB transport for `06cb:009a` using `libusb` (`rusb`).
@@ -342,5 +357,28 @@ impl Transport for SynapticsUsbTransport {
                 Err(_) => break,
             }
         }
+    }
+
+    fn read_image_data(&mut self, min_bytes: usize, timeout: Duration) -> Result<Vec<u8>> {
+        let mut out = Vec::with_capacity(min_bytes.max(128 * 1024));
+        let mut chunk = vec![0u8; 1024 * 1024];
+        while out.len() < min_bytes {
+            let n = self
+                .handle
+                .read_bulk(EP_IMAGE_IN, &mut chunk, timeout)
+                .map_err(|e| {
+                    drv_error!("USB Bulk IN error on EP 0x{EP_IMAGE_IN:02x}: {e}");
+                    DriverError::Usb(e)
+                })?;
+            if n == 0 {
+                break;
+            }
+            out.extend_from_slice(&chunk[..n]);
+        }
+        drv_debug!(
+            "USB Bulk IN  EP 0x{EP_IMAGE_IN:02x}: read {} B (min_bytes={min_bytes})",
+            out.len()
+        );
+        Ok(out)
     }
 }
