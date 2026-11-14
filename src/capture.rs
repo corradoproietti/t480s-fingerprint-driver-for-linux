@@ -728,4 +728,183 @@ impl<T: Transport> SensorSession<T> {
         }
         res
     }
+
+    /// Verify whether Flash Partition 6 contains a valid `0x5002` clean-slate calibration baseline image.
+    pub fn check_clean_slate(&mut self) -> Result<bool> {
+        let start = self.read_partition_chunk(6, 1, 0, 0x44)?;
+        if start.len() < 0x44 {
+            return Ok(false);
+        }
+        let magic = u16::from_le_bytes([start[0], start[1]]);
+        let len = u16::from_le_bytes([start[2], start[3]]) as usize;
+        if magic != 0x5002 || len == 0 {
+            return Ok(false);
+        }
+        let hs = &start[4..0x24];
+        let zeroes = &start[0x24..0x44];
+        if zeroes.iter().any(|&b| b != 0) {
+            drv_warn!("[CALIBRATE] Unexpected non-zero padding in Flash Partition 6 header");
+            return Ok(false);
+        }
+        let img = self.read_partition_all(6, 0x44, len)?;
+        if img.len() != len {
+            return Ok(false);
+        }
+        let digest = <sha2::Sha256 as sha2::Digest>::digest(&img);
+        if hs != digest.as_slice() {
+            drv_warn!("[CALIBRATE] Flash Partition 6 clean-slate SHA-256 mismatch");
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    /// Persist a `0x5002` clean-slate reference image into Flash Partition 6 (`sensor.py`: `persist_clean_slate`).
+    pub fn persist_clean_slate(&mut self, clean_slate: &[u8]) -> Result<()> {
+        if clean_slate.len() < 0x44 {
+            return Err(DriverError::Protocol(
+                "clean_slate buffer smaller than 0x44 header".into(),
+            ));
+        }
+        let start = self.read_partition_chunk(6, 1, 0, 0x44)?;
+        if start.len() >= 0x44 && start.iter().any(|&b| b != 0xff) {
+            if start[..0x44] == clean_slate[..0x44] {
+                drv_info!("[CALIBRATE] Clean-slate header already matches Flash Partition 6.");
+                return Ok(());
+            }
+            drv_info!("[CALIBRATE] Erasing existing Flash Partition 6 before writing new clean slate...");
+            self.erase_partition(6)?;
+        }
+        drv_info!(
+            "[CALIBRATE] Writing {} B clean-slate baseline to Flash Partition 6...",
+            clean_slate.len()
+        );
+        self.write_partition_all(6, 0, clean_slate)?;
+        Ok(())
+    }
+
+    /// Run the full 3-iteration 2D capacitive calibration + Flash Partition 6 clean-slate capture
+    /// for this exact physical `06cb:009a` sensor (`sensor.py`: `calibrate()`), returning the
+    /// 13,440-byte `calib_data` table.
+    pub fn calibrate_sensor(&mut self) -> Result<Vec<u8>> {
+        const BYTES_PER_LINE: usize = 120;
+        const LINES_PER_FRAME: usize = 224;
+        const FRAME_SIZE: usize = LINES_PER_FRAME * BYTES_PER_LINE; // 26,880 B
+
+        let factory_calib = self.get_factory_calibration_values()?;
+        let mut calib_data: Vec<u8> = Vec::new();
+
+        for iter in 0..3 {
+            drv_info!(
+                "[CALIBRATE] Iteration {}/3: capturing 2D baseline frames on EP 0x82...",
+                iter + 1
+            );
+            let cmd = build_cmd_02_0199(CaptureMode::Calibrate, &factory_calib, &calib_data);
+            let _ = self.execute_cmd(&cmd, 2)?;
+            let raw_82 = self
+                .transport
+                .read_image_data(2 * FRAME_SIZE, Duration::from_secs(10))?;
+            let cooked = average_calibration_frames_0199(&raw_82)?;
+            process_calibration_results_0199(&mut calib_data, &cooked);
+        }
+
+        drv_info!("[CALIBRATE] Capturing blank reference image (clean slate) on EP 0x82...");
+        let cmd = build_cmd_02_0199(CaptureMode::Calibrate, &factory_calib, &calib_data);
+        let _ = self.execute_cmd(&cmd, 2)?;
+        let raw_82 = self
+            .transport
+            .read_image_data(2 * FRAME_SIZE, Duration::from_secs(10))?;
+        let avg_blank = average_calibration_frames_0199(&raw_82)?;
+
+        let mut inner = Vec::with_capacity(4 + avg_blank.len());
+        inner.extend_from_slice(&(avg_blank.len() as u16).to_le_bytes());
+        inner.extend_from_slice(&avg_blank);
+        inner.extend_from_slice(&0u16.to_le_bytes());
+
+        let digest = <sha2::Sha256 as sha2::Digest>::digest(&inner);
+        let mut clean_slate = Vec::with_capacity(0x44 + inner.len());
+        clean_slate.extend_from_slice(&0x5002u16.to_le_bytes());
+        clean_slate.extend_from_slice(&(inner.len() as u16).to_le_bytes());
+        clean_slate.extend_from_slice(&digest);
+        clean_slate.extend_from_slice(&[0u8; 0x20]);
+        clean_slate.extend_from_slice(&inner);
+
+        self.persist_clean_slate(&clean_slate)?;
+        self.transport.flush_interrupt_events();
+        drv_info!(
+            "[CALIBRATE] Sensor 2D calibration complete (calib_data={} B, clean_slate={} B)",
+            calib_data.len(),
+            clean_slate.len()
+        );
+        Ok(calib_data)
+    }
+}
+
+fn calib_clip(x: i32) -> u8 {
+    let clamped = x.clamp(-128, 127);
+    (clamped as i8) as u8
+}
+
+fn calib_scale(x: u8) -> u8 {
+    let diff = (x as i32) - 0x80;
+    calib_clip((diff * 10) / 0x22)
+}
+
+fn calib_add(l: u8, r: u8) -> u8 {
+    let ls = (l as i8) as i32;
+    let rs = (r as i8) as i32;
+    calib_clip(ls + rs)
+}
+
+/// Average the second 224-line frame across 2 interleaved lines per calibration row (`sensor.py`: `average`),
+/// producing a 13,440-byte (`112 * 120`) cooked frame.
+pub(crate) fn average_calibration_frames_0199(raw_calib_data: &[u8]) -> Result<Vec<u8>> {
+    const BYTES_PER_LINE: usize = 120;
+    const LINES_PER_FRAME: usize = 224;
+    const INTERLEAVE_LINES: usize = 2;
+    const FRAME_SIZE: usize = LINES_PER_FRAME * BYTES_PER_LINE; // 26,880 B
+
+    if raw_calib_data.len() < 2 * FRAME_SIZE {
+        return Err(DriverError::ShortResponse {
+            context: "EP 0x82 calibration frame stream",
+            expected: 2 * FRAME_SIZE,
+            actual: raw_calib_data.len(),
+        });
+    }
+    let frame = &raw_calib_data[FRAME_SIZE..2 * FRAME_SIZE];
+    let group_len = INTERLEAVE_LINES * BYTES_PER_LINE;
+    let mut out = Vec::with_capacity(112 * BYTES_PER_LINE);
+    for group in frame.chunks_exact(group_len) {
+        let line0 = &group[..BYTES_PER_LINE];
+        let line1 = &group[BYTES_PER_LINE..2 * BYTES_PER_LINE];
+        for c in 0..BYTES_PER_LINE {
+            let avg = ((line0[c] as u16) + (line1[c] as u16)) / 2;
+            out.push(avg as u8);
+        }
+    }
+    Ok(out)
+}
+
+/// Scale and accumulate a 13,440-byte cooked calibration frame into `calib_data` (`sensor.py`: `process_calibration_results`).
+pub(crate) fn process_calibration_results_0199(calib_data: &mut Vec<u8>, cooked_data: &[u8]) {
+    const BYTES_PER_LINE: usize = 120;
+    let mut scaled_frame = Vec::with_capacity(cooked_data.len());
+    for line in cooked_data.chunks_exact(BYTES_PER_LINE) {
+        scaled_frame.extend_from_slice(&line[..8]);
+        for &b in &line[8..] {
+            scaled_frame.push(calib_scale(b));
+        }
+    }
+
+    if calib_data.len() == scaled_frame.len() {
+        for (ll, rr) in calib_data
+            .chunks_exact_mut(BYTES_PER_LINE)
+            .zip(scaled_frame.chunks_exact(BYTES_PER_LINE))
+        {
+            for (l_byte, &r_byte) in ll[8..].iter_mut().zip(rr[8..].iter()) {
+                *l_byte = calib_add(*l_byte, r_byte);
+            }
+        }
+    } else {
+        *calib_data = scaled_frame;
+    }
 }
